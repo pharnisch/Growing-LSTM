@@ -14,7 +14,9 @@ class GrowingLSTM(torch.nn.Module):
         self.vocab_size = len(word_to_ix)
         self.tagset_size = len(tag_to_ix)
         self.word_to_ix = word_to_ix
+        self.ix_to_word = {value: label for label, value in word_to_ix.items()}
         self.tag_to_ix = tag_to_ix
+        self.ix_to_tag = {value: label for label, value in tag_to_ix.items()}
 
         self.word_embeddings = torch.nn.Embedding(self.vocab_size, self.embedding_dim)
 
@@ -43,10 +45,9 @@ class GrowingLSTM(torch.nn.Module):
     def predict(self, sentence):
         tag_scores = self.forward(sentence)
         tag_scores_argmax = torch.argmax(tag_scores, dim=1)
-        print(tag_scores_argmax)
         return tag_scores_argmax
 
-    def get_token_level_accuracies(self, data):
+    def get_token_level_scores(self, data):
         all_predictions = [self.predict(prepare_sequence(sent, self.word_to_ix)) for (sent, _) in data]
         all_gold_targets = [prepare_sequence(gold_targets, self.tag_to_ix) for (_, gold_targets) in data]
         fp = {}
@@ -59,36 +60,47 @@ class GrowingLSTM(torch.nn.Module):
             tp[tag] = 0
             tn[tag] = 0
         for (prediction, gold_targets) in zip(all_predictions, all_gold_targets):
-            print(prediction)
-            print(gold_targets)
             for (word_prediction, word_gold_target) in zip(prediction, gold_targets):
-                if word_prediction == word_gold_target:  # tp
-                    tp[word_gold_target] += 1
-                elif word_prediction != word_gold_target and word_prediction == 0:  # fn
-                    fn[word_gold_target] += 1
-                elif word_prediction != word_gold_target and word_prediction != 0:  # fp
-                    fp[word_gold_target] += 1
-                else:  # tn
-                    tn[word_gold_target] += 1
+                word_prediction = word_prediction.item()
+                word_gold_target = word_gold_target.item()
+
+                for tag in self.tag_to_ix:
+                    tag_ix = self.tag_to_ix[tag]
+                    if word_prediction == tag_ix and word_gold_target == tag_ix:  # tp
+                        tp[tag] += 1
+                    elif word_prediction != tag_ix and word_gold_target == tag_ix:  # fn
+                        fn[tag] += 1
+                    elif word_prediction == tag_ix and word_gold_target != tag_ix:  # fp
+                        fp[tag] += 1
+                    else:  # tn
+                        tn[tag] += 1
         accuracies = {}
         precisions = {}
         recalls = {}
+        f1_score = {}
         for tag in self.tag_to_ix:
-            accuracies[tag] = (tp[tag] + tn[tag])/(tp[tag]+fp[tag]+fn[tag]+tn[tag])
-            precisions[tag] = tp[tag]/(tp[tag]+fp[tag])
-            recalls[tag] = tp[tag] / (tp[tag] + fn[tag])
-        print(accuracies)
-        print(precisions)
-        print(recalls)
-        quit()
-        return all_predictions, all_gold_targets
+            accuracies[tag] = (tp[tag] + tn[tag])/(tp[tag]+fp[tag]+fn[tag]+tn[tag]) if (tp[tag]+fp[tag]+fn[tag]+tn[tag]) > 0 else 0
+            precisions[tag] = tp[tag]/(tp[tag]+fp[tag]) if (tp[tag]+fp[tag]) > 0 else 0
+            recalls[tag] = tp[tag] / (tp[tag] + fn[tag]) if (tp[tag] + fn[tag]) > 0 else 0
+            f1_score[tag] = 2 * (precisions[tag] * recalls[tag]) / (precisions[tag] + recalls[tag]) if (precisions[tag] + recalls[tag]) > 0 else 0
+        return accuracies, precisions, recalls, f1_score
+
+    def print_token_level_scores(self, data, only_f1_score=True):
+        accuracies, precisions, recalls, f1_score = self.get_token_level_scores(data)
+        print("##############################################################################")
+        if not only_f1_score:
+            print(f"Accuracies: {accuracies}")
+            print(f"Precisions: {precisions}")
+            print(f"Recalls: {recalls}")
+        print(f"F1-Score: {f1_score}")
+        print("##############################################################################")
+
 
 data_train = get_data(100)
 word_to_ix, tag_to_ix = get_dicts(data_train)
 model = GrowingLSTM(word_to_ix, tag_to_ix)
 loss_function = torch.nn.NLLLoss()
 optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-
 
 
 for epoch in range(1000):  # again, normally you would NOT do 300 epochs, it is toy data
@@ -140,7 +152,7 @@ for epoch in range(1000):  # again, normally you would NOT do 300 epochs, it is 
     if (epoch % 50) == 0:
         print("epoch " + str(epoch))
         with torch.no_grad():
-            print(model.get_token_level_accuracies([data_train[0]]))
+            model.print_token_level_scores(data_train)
 
 
 
@@ -156,4 +168,4 @@ with torch.no_grad():
     # 1 is the index of maximum value of row 2, etc.
     # Which is DET NOUN VERB DET NOUN, the correct sequence!
     #print(tag_scores)
-    print(model.get_token_level_accuracies([data_train[0]]))
+    model.print_token_level_scores(data_train)
