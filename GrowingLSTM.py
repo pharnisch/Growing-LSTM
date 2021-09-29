@@ -9,8 +9,10 @@ class GrowingLSTM(torch.nn.Module):
     def __init__(self, word_to_ix, tag_to_ix):
         super(GrowingLSTM, self).__init__()
 
-        self.embedding_dim = 3
-        self.hidden_dim = 2
+        self.new_neuron = -1  # while new
+
+        self.input_size = 3
+        self.hidden_size = 2
         self.vocab_size = len(word_to_ix)
         self.tagset_size = len(tag_to_ix)
         self.word_to_ix = word_to_ix
@@ -18,10 +20,8 @@ class GrowingLSTM(torch.nn.Module):
         self.tag_to_ix = tag_to_ix
         self.ix_to_tag = {value: label for label, value in tag_to_ix.items()}
 
-        self.word_embeddings = torch.nn.Embedding(self.vocab_size, self.embedding_dim)
+        self.word_embeddings = torch.nn.Embedding(self.vocab_size, self.input_size)
 
-        self.input_size = self.embedding_dim
-        self.hidden_size = self.hidden_dim
         self.lstm = torch.nn.LSTM(
             input_size=self.input_size,
             hidden_size=self.hidden_size,
@@ -33,7 +33,62 @@ class GrowingLSTM(torch.nn.Module):
             proj_size=0,
         )
 
-        self.hidden2tag = torch.nn.Linear(self.hidden_dim, self.tagset_size)
+        self.hidden2tag = torch.nn.Linear(self.hidden_size, self.tagset_size)
+
+    def add_tag(self, tag):
+        ix = len(self.tag_to_ix)
+        self.tag_to_ix[tag] = ix
+        self.ix_to_tag[ix] = tag
+        self.tagset_size += 1
+        # TODO: create linear layer with old weights + new random weights that lead to new neuron in linear layer
+        # TODO: should this be topic of the thesis as this is a totally seperate topic to add new labels to a task?
+        # TODO: the topic here should concentrate on increasing the model to learn newly emerging pattern for the current tag set.
+        # self.hidden2tag = torch.nn.Linear(self.hidden_dim, self.tagset_size)
+
+    def add_neuron(self):
+        self.hidden_size += 1
+        self.new_neuron = self.hidden_size - 1
+        # new LSTM weights and biases are initialized as all the weights in pytorch LSTM by default
+        # (see https://pytorch.org/docs/stable/generated/torch.nn.LSTM.html)
+        # uniform(-sqrt(k), sqrt(k)), k=1/hidden_size
+        sqrt_k = (1/self.hidden_size)**0.5
+
+        param_list = list(self.lstm.named_parameters())
+        print(param_list)
+
+
+        # "lstm.weight_ih_l0"
+        weight_ih_new = torch.FloatTensor(4, self.input_size).uniform_(-sqrt_k, sqrt_k)
+        self.lstm.weight_ih_l0.data = torch.cat((self.lstm.weight_ih_l0.data, weight_ih_new), 0)
+
+        # "lstm.bias_ih_l0"
+        bias_ih_new = torch.FloatTensor(4,).uniform_(-sqrt_k, sqrt_k)
+        self.lstm.bias_ih_l0.data = torch.cat((self.lstm.bias_ih_l0.data, bias_ih_new), 0)
+
+        # "lstm.weight_hh_l0"
+        weight_hh_new_1 = torch.FloatTensor(4 * (self.hidden_size - 1), 1).uniform_(-sqrt_k, sqrt_k)
+        weight_hh_new_2 = torch.FloatTensor(4, self.input_size).uniform_(-sqrt_k, sqrt_k)
+        tmp = torch.cat((self.lstm.weight_hh_l0.data, weight_hh_new_1), 1)
+        self.lstm.weight_hh_l0.data = torch.cat((tmp, weight_hh_new_2), 0)
+
+        # "lstm.bias_hh_l0"
+        bias_hh_new = torch.FloatTensor(4,).uniform_(-sqrt_k, sqrt_k)
+        self.lstm.bias_hh_l0.data = torch.cat((self.lstm.bias_hh_l0.data, bias_hh_new), 0)
+
+        # new Linear Layer weights are initialized by pytorch Linear as default:
+        # (see https://pytorch.org/docs/stable/generated/torch.nn.Linear.html)
+        # uniform(-sqrt(k), sqrt(k)), k=1/input_size
+        sqrt_k = (1 / self.input_size) ** 0.5
+
+        param_list = list(self.hidden2tag.named_parameters())
+        print(param_list)
+
+        # "hidden2tag.weight"
+        weight_new = torch.FloatTensor(self.tagset_size, 1).uniform_(-sqrt_k, sqrt_k)
+        self.hidden2tag.weight.data = torch.cat((self.hidden2tag.weight.data, weight_new), 1)
+
+        # "hidden2tag.bias"
+        # NOTHING TO CHANGE HERE AS IT IS NOT CONNECTED TO OUTPUTS OF LSTM
 
     def forward(self, sentence):
         embeds = self.word_embeddings(sentence)
@@ -102,6 +157,7 @@ model = GrowingLSTM(word_to_ix, tag_to_ix)
 loss_function = torch.nn.NLLLoss()
 optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
 
+model.add_neuron()
 
 for epoch in range(1000):  # again, normally you would NOT do 300 epochs, it is toy data
     for sentence, tags in data_train:
