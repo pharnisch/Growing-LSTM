@@ -153,9 +153,12 @@ data_train = get_data(100)
 word_to_ix, tag_to_ix = get_dicts(data_train)
 model = GrowingLSTM(word_to_ix, tag_to_ix)
 loss_function = torch.nn.NLLLoss()
-optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+lr = 0.1
 
 model.add_neuron()
+model.add_neuron()
+model.add_neuron()
+print(list(model.named_parameters()))
 
 for epoch in range(1000):  # again, normally you would NOT do 300 epochs, it is toy data
     for sentence, tags in data_train:
@@ -176,24 +179,37 @@ for epoch in range(1000):  # again, normally you would NOT do 300 epochs, it is 
         loss = loss_function(tag_scores, targets)
         loss.backward()
 
-        #optimizer.step()
         with torch.no_grad():
             for p in model.named_parameters():
                 (name, param) = p
-                if name == "lstm.weight_ih_l0":
-                    new_val = param - 0.1 * param.grad
-                elif name == "lstm.weight_hh_l0":
-                    new_val = param - 0.1 * param.grad
-                elif name == "lstm.bias_ih_l0":
-                    new_val = param - 0.1 * param.grad
-                elif name == "lstm.bias_hh_l0":
-                    new_val = param - 0.1 * param.grad
-                elif name == "hidden2tag.weight":
-                    new_val = param - 0.1 * param.grad
-                elif name == "hidden2tag.bias":
-                    new_val = param - 0.1 * param.grad
+                if model.new_neuron != -1:
+                    lr_old = lr/100
+                    if name == "lstm.weight_ih_l0":
+                        lr_tensor = torch.cat(
+                            (torch.full(((model.hidden_size - 1) * 4, model.input_size), lr_old),
+                             torch.full((4, model.input_size), lr)), dim=0)
+                        new_val = param - torch.mul(lr_tensor, param.grad)
+                    elif name == "lstm.weight_hh_l0":
+                        lr_tensor = torch.cat((torch.full(((model.hidden_size - 1)*4, model.hidden_size - 1), lr_old),
+                                               torch.full(((model.hidden_size - 1)*4, 1), lr)), dim=1)
+                        lr_tensor = torch.cat((lr_tensor, torch.full((4, model.hidden_size), lr)), dim=0)
+                        new_val = param - torch.mul(lr_tensor, param.grad)
+                    elif name == "lstm.bias_ih_l0":
+                        lr_tensor = torch.cat((torch.full(((model.hidden_size - 1)*4, ), lr_old),
+                                               torch.full((4, ), lr)), dim=0)
+                        new_val = param - torch.mul(lr_tensor, param.grad)
+                    elif name == "lstm.bias_hh_l0":
+                        lr_tensor = torch.cat((torch.full(((model.hidden_size - 1)*4, ), lr_old),
+                                               torch.full((4, ), lr)), dim=0)
+                        new_val = param - torch.mul(lr_tensor, param.grad)
+                    elif name == "hidden2tag.weight":
+                        lr_tensor = torch.cat((torch.full((model.tagset_size, model.hidden_size - 1), lr_old),
+                                               torch.full((model.tagset_size, 1), lr)), dim=1)
+                        new_val = param - torch.mul(lr_tensor, param.grad)
+                    else:
+                        new_val = param - lr_old * param.grad
                 else:
-                    new_val = param - 0.1 * param.grad
+                    new_val = param - lr * param.grad
                 param.copy_(new_val)
                 #param.grad.zero_()  # dont necessary because of model.zero_grad()
 
@@ -205,7 +221,8 @@ for epoch in range(1000):  # again, normally you would NOT do 300 epochs, it is 
     if (epoch % 50) == 0 and epoch > 0:
         print("epoch " + str(epoch))
         with torch.no_grad():
-            model.add_neuron()
+            pass
+            #model.add_neuron()
             # optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
 
 
