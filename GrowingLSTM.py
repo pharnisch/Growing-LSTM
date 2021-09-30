@@ -12,7 +12,7 @@ class GrowingLSTM(torch.nn.Module):
         self.new_neuron = -1  # while new
 
         self.input_size = 3
-        self.hidden_size = 2
+        self.hidden_size = 1
         self.vocab_size = len(word_to_ix)
         self.tagset_size = len(tag_to_ix)
         self.word_to_ix = word_to_ix
@@ -46,49 +46,47 @@ class GrowingLSTM(torch.nn.Module):
         # self.hidden2tag = torch.nn.Linear(self.hidden_dim, self.tagset_size)
 
     def add_neuron(self):
+        print(f"    - The {self.hidden_size + 1}. hidden LSTM neuron has been inserted!")
         self.hidden_size += 1
-        self.new_neuron = self.hidden_size - 1
-        # new LSTM weights and biases are initialized as all the weights in pytorch LSTM by default
-        # (see https://pytorch.org/docs/stable/generated/torch.nn.LSTM.html)
-        # uniform(-sqrt(k), sqrt(k)), k=1/hidden_size
-        sqrt_k = (1/self.hidden_size)**0.5
+        self.new_neuron = self.hidden_size - 1  # for learning rate, to learn more on new neuron
 
-        param_list = list(self.lstm.named_parameters())
-        print(param_list)
+        with torch.no_grad():
+            self.lstm.hidden_size = self.hidden_size
+            # new LSTM weights and biases are initialized as all the weights in pytorch LSTM by default
+            # (see https://pytorch.org/docs/stable/generated/torch.nn.LSTM.html)
+            # uniform(-sqrt(k), sqrt(k)), k=1/hidden_size
+            sqrt_k = (1/self.hidden_size)**0.5
 
+            # "lstm.weight_ih_l0"
+            weight_ih_new = torch.FloatTensor(4, self.input_size).uniform_(-sqrt_k, sqrt_k)
+            self.lstm.weight_ih_l0 = torch.nn.Parameter(torch.cat((self.lstm.weight_ih_l0.data, weight_ih_new), 0))
 
-        # "lstm.weight_ih_l0"
-        weight_ih_new = torch.FloatTensor(4, self.input_size).uniform_(-sqrt_k, sqrt_k)
-        self.lstm.weight_ih_l0.data = torch.cat((self.lstm.weight_ih_l0.data, weight_ih_new), 0)
+            # "lstm.bias_ih_l0"
+            bias_ih_new = torch.FloatTensor(4,).uniform_(-sqrt_k, sqrt_k)
+            self.lstm.bias_ih_l0 = torch.nn.Parameter(torch.cat((self.lstm.bias_ih_l0.data, bias_ih_new), 0))
 
-        # "lstm.bias_ih_l0"
-        bias_ih_new = torch.FloatTensor(4,).uniform_(-sqrt_k, sqrt_k)
-        self.lstm.bias_ih_l0.data = torch.cat((self.lstm.bias_ih_l0.data, bias_ih_new), 0)
+            # "lstm.weight_hh_l0"
+            weight_hh_new_1 = torch.FloatTensor(4 * (self.hidden_size - 1), 1).uniform_(-sqrt_k, sqrt_k)
+            weight_hh_new_2 = torch.FloatTensor(4, self.hidden_size).uniform_(-sqrt_k, sqrt_k)
+            tmp = torch.cat((self.lstm.weight_hh_l0.data, weight_hh_new_1), 1)
+            self.lstm.weight_hh_l0 = torch.nn.Parameter(torch.cat((tmp, weight_hh_new_2), 0))
 
-        # "lstm.weight_hh_l0"
-        weight_hh_new_1 = torch.FloatTensor(4 * (self.hidden_size - 1), 1).uniform_(-sqrt_k, sqrt_k)
-        weight_hh_new_2 = torch.FloatTensor(4, self.input_size).uniform_(-sqrt_k, sqrt_k)
-        tmp = torch.cat((self.lstm.weight_hh_l0.data, weight_hh_new_1), 1)
-        self.lstm.weight_hh_l0.data = torch.cat((tmp, weight_hh_new_2), 0)
+            # "lstm.bias_hh_l0"
+            bias_hh_new = torch.FloatTensor(4,).uniform_(-sqrt_k, sqrt_k)
+            self.lstm.bias_hh_l0 = torch.nn.Parameter(torch.cat((self.lstm.bias_hh_l0.data, bias_hh_new), 0))
 
-        # "lstm.bias_hh_l0"
-        bias_hh_new = torch.FloatTensor(4,).uniform_(-sqrt_k, sqrt_k)
-        self.lstm.bias_hh_l0.data = torch.cat((self.lstm.bias_hh_l0.data, bias_hh_new), 0)
+            self.hidden2tag.in_features = self.hidden_size
+            # new Linear Layer weights are initialized by pytorch Linear as default:
+            # (see https://pytorch.org/docs/stable/generated/torch.nn.Linear.html)
+            # uniform(-sqrt(k), sqrt(k)), k=1/input_size
+            sqrt_k = (1 / self.input_size) ** 0.5
 
-        # new Linear Layer weights are initialized by pytorch Linear as default:
-        # (see https://pytorch.org/docs/stable/generated/torch.nn.Linear.html)
-        # uniform(-sqrt(k), sqrt(k)), k=1/input_size
-        sqrt_k = (1 / self.input_size) ** 0.5
+            # "hidden2tag.weight"
+            weight_new = torch.FloatTensor(self.tagset_size, 1).uniform_(-sqrt_k, sqrt_k)
+            self.hidden2tag.weight = torch.nn.Parameter(torch.cat((self.hidden2tag.weight.data, weight_new), 1))
 
-        param_list = list(self.hidden2tag.named_parameters())
-        print(param_list)
-
-        # "hidden2tag.weight"
-        weight_new = torch.FloatTensor(self.tagset_size, 1).uniform_(-sqrt_k, sqrt_k)
-        self.hidden2tag.weight.data = torch.cat((self.hidden2tag.weight.data, weight_new), 1)
-
-        # "hidden2tag.bias"
-        # NOTHING TO CHANGE HERE AS IT IS NOT CONNECTED TO OUTPUTS OF LSTM
+            # "hidden2tag.bias"
+            # NOTHING TO CHANGE HERE AS IT IS NOT CONNECTED TO OUTPUTS OF LSTM
 
     def forward(self, sentence):
         embeds = self.word_embeddings(sentence)
@@ -184,32 +182,31 @@ for epoch in range(1000):  # again, normally you would NOT do 300 epochs, it is 
                 (name, param) = p
                 if name == "lstm.weight_ih_l0":
                     new_val = param - 0.1 * param.grad
-                    param.copy_(new_val)
                 elif name == "lstm.weight_hh_l0":
                     new_val = param - 0.1 * param.grad
-                    param.copy_(new_val)
                 elif name == "lstm.bias_ih_l0":
                     new_val = param - 0.1 * param.grad
-                    param.copy_(new_val)
                 elif name == "lstm.bias_hh_l0":
                     new_val = param - 0.1 * param.grad
-                    param.copy_(new_val)
                 elif name == "hidden2tag.weight":
                     new_val = param - 0.1 * param.grad
-                    param.copy_(new_val)
                 elif name == "hidden2tag.bias":
                     new_val = param - 0.1 * param.grad
-                    param.copy_(new_val)
                 else:
                     new_val = param - 0.1 * param.grad
-                    param.copy_(new_val)
-                    #p.grad.zero_()  # dont necessary because of model.zero_grad()
+                param.copy_(new_val)
+                #param.grad.zero_()  # dont necessary because of model.zero_grad()
 
     if (epoch % 50) == 0:
         print("epoch " + str(epoch))
         with torch.no_grad():
             model.print_token_level_scores(data_train)
 
+    if (epoch % 50) == 0 and epoch > 0:
+        print("epoch " + str(epoch))
+        with torch.no_grad():
+            model.add_neuron()
+            # optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
 
 
 # See what the scores are after training
